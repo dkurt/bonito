@@ -4,7 +4,7 @@ Bonito Model template
 
 import torch.nn as nn
 from torch.nn import ReLU, LeakyReLU
-from torch.nn import Module, ModuleList, Sequential, Conv1d, BatchNorm1d, Dropout
+from torch.nn import Module, ModuleList, Sequential, Conv2d, BatchNorm2d, Dropout
 
 
 activations = {
@@ -63,27 +63,27 @@ class Encoder(Module):
         return self.encoder([x])
 
 
-class TCSConv1d(Module):
+class TCSConv2d(Module):
     """
     Time-Channel Separable 1D Convolution
     """
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=False, separable=False):
 
-        super(TCSConv1d, self).__init__()
+        super(TCSConv2d, self).__init__()
         self.separable = separable
 
         if separable:
-            self.depthwise = Conv1d(
+            self.depthwise = Conv2d(
                 in_channels, in_channels, kernel_size=kernel_size, stride=stride,
                 padding=padding, dilation=dilation, bias=bias, groups=in_channels
             )
 
-            self.pointwise = Conv1d(
+            self.pointwise = Conv2d(
                 in_channels, out_channels, kernel_size=1, stride=stride,
                 dilation=dilation, bias=bias, padding=0
             )
         else:
-            self.conv = Conv1d(
+            self.conv = Conv2d(
                 in_channels, out_channels, kernel_size=kernel_size,
                 stride=stride, padding=padding, dilation=dilation, bias=bias
             )
@@ -109,7 +109,7 @@ class Block(Module):
         self.conv = ModuleList()
 
         _in_channels = in_channels
-        padding = self.get_padding(kernel_size[0], stride[0], dilation[0])
+        padding = [self.get_padding(k, s, d) for k, s, d in zip(kernel_size, stride, dilation)]
 
         # add the first n - 1 convolutions + activation
         for _ in range(repeat - 1):
@@ -151,12 +151,12 @@ class Block(Module):
 
     def get_tcs(self, in_channels, out_channels, kernel_size=1, stride=1, dilation=1, padding=0, bias=False, separable=False):
         return [
-            TCSConv1d(
+            TCSConv2d(
                 in_channels, out_channels, kernel_size,
                 stride=stride, dilation=dilation, padding=padding,
                 bias=bias, separable=separable
             ),
-            BatchNorm1d(out_channels, eps=1e-3, momentum=0.1)
+            BatchNorm2d(out_channels, eps=1e-3, momentum=0.1)
         ]
 
     def forward(self, x):
@@ -174,8 +174,8 @@ class Decoder(Module):
     """
     def __init__(self, features, classes):
         super(Decoder, self).__init__()
-        self.layers = Sequential(Conv1d(features, classes, kernel_size=1, bias=True))
+        self.layers = Sequential(Conv2d(features, classes, kernel_size=1, bias=True))
 
     def forward(self, x):
         x = self.layers(x[-1])
-        return nn.functional.log_softmax(x.transpose(1, 2), dim=2)
+        return nn.functional.log_softmax(x.transpose(1, 3), dim=-1)
