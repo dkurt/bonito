@@ -77,6 +77,14 @@ $ source venv3/bin/activate
 (venv3) $ bonito download --all
 ```
 
+To optimize inference on CPU with Intel OpenVINO:
+* Download and install OpenVINO from https://software.seek.intel.com/openvino-toolkit
+```bash
+(venv3) $ pip install -r /opt/intel/openvino/deployment_tools/model_optimizer/requirements_onnx.txt
+(venv3) $ source /opt/intel/openvino/bin/setupvars.sh
+(venv3) $ bonito evaluate dna_r9.4.1 --use_openvino --device=cpu
+```
+
 ## Medaka
 
 The Medaka can be downloaded from [here](https://nanoporetech.box.com/shared/static/u5gncwjbtg2k3dkw26nmvdvck65ab3xh.hdf5).

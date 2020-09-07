@@ -30,7 +30,7 @@ def main(args):
     for w in [int(i) for i in args.weights.split(',')]:
 
         print("* loading model", w)
-        model = load_model(args.model_directory, args.device, weights=w, half=args.half)
+        model = load_model(args.model_directory, args.device, weights=w, half=args.half, use_openvino=args.use_openvino)
 
         print("* calling")
         predictions = []
@@ -39,9 +39,8 @@ def main(args):
         with torch.no_grad():
             for data, *_ in dataloader:
                 if args.half:
-                    data = data.type(torch.float16).to(args.device)
-                else:
-                    data = data.to(args.device)
+                    data = data.type(torch.float16)
+                data = data.to(args.device if not args.use_openvino else 'cpu')
                 log_probs = model(data)
                 predictions.append(log_probs.exp().cpu().numpy().astype(np.float32))
 
@@ -90,4 +89,5 @@ def argparser():
     parser.add_argument("--poa", action="store_true", default=False)
     parser.add_argument("--shuffle", action="store_true", default=True)
     parser.add_argument("--min-coverage", default=0.5, type=float)
+    parser.add_argument("--use_openvino", action="store_true", default=False)
     return parser

@@ -10,6 +10,7 @@ from collections import defaultdict, OrderedDict
 
 from bonito.model import Model
 from bonito_cuda_runtime import CuModel
+from bonito.openvino.model import OpenVINOModel
 
 import toml
 import torch
@@ -75,7 +76,7 @@ def init(seed, device):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if device == "cpu": return
+    if not device.startswith('cuda'): return
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -245,7 +246,7 @@ def load_data(shuffle=False, limit=None, directory=None, validation=False):
     return chunks, chunk_lengths, targets, target_lengths
 
 
-def load_model(dirname, device, weights=None, half=None, chunksize=0, use_rt=False):
+def load_model(dirname, device, weights=None, half=None, chunksize=0, use_rt=False, use_openvino=False):
     """
     Load a model from disk
     """
@@ -258,12 +259,13 @@ def load_model(dirname, device, weights=None, half=None, chunksize=0, use_rt=Fal
             raise FileNotFoundError("no model weights found in '%s'" % dirname)
         weights = max([int(re.sub(".*_([0-9]+).tar", "\\1", w)) for w in weight_files])
 
-    device = torch.device(device)
+    if not use_openvino:
+        device = torch.device(device)
     config = os.path.join(dirname, 'config.toml')
     weights = os.path.join(dirname, 'weights_%s.tar' % weights)
     model = Model(toml.load(config))
 
-    state_dict = torch.load(weights, map_location=device)
+    state_dict = torch.load(weights, map_location=device if not use_openvino else 'cpu')
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
         name = k.replace('module.', '')
@@ -271,8 +273,11 @@ def load_model(dirname, device, weights=None, half=None, chunksize=0, use_rt=Fal
 
     model.load_state_dict(new_state_dict)
 
+    assert(not use_rt or not use_openvino)
     if use_rt:
         model = CuModel(model.config, chunksize, new_state_dict)
+    elif use_openvino:
+        model = OpenVINOModel(model, half, dirname)
 
     if half is None:
         half = half_supported()
