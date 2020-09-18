@@ -13,33 +13,8 @@ class OpenVINOModel:
         self.model = model
         self.alphabet = model.alphabet
 
-        onnx_path = os.path.join(dirname, model.config['model']) + '.onnx'
         model_name = model.config['model'] + ('_fp16' if half else '')
         xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
-        if not os.path.exists(xml_path) or not os.path.exists(bin_path):
-
-            # Convert to ONNX
-            if not os.path.exists(onnx_path):
-                inp = torch.randn(1, 1, 1000)  # Just dummy input shape. We will reshape model later
-                model.eval()
-                with torch.no_grad():
-                    torch.onnx.export(model, inp, onnx_path,
-                                    input_names=['input'],
-                                    output_names=['output'],
-                                    operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK)
-
-            # Convert to IR
-            import mo_onnx
-            import subprocess
-            subprocess.call([mo_onnx.__file__,
-                             '--input_model', onnx_path,
-                             '--extension', os.path.join(os.path.dirname(__file__), 'mo_extension'),
-                             '--keep_shape_ops',
-                             '--model_name', model_name,
-                             '--data_type', 'FP16' if half else 'FP32',
-                             '--input_shape=[1,1,1,1000]',
-                             '--output_dir', dirname])
-
         self.ie = IECore()
         self.net = self.ie.read_network(xml_path, bin_path)
         self.exec_net = None

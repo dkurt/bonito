@@ -78,10 +78,18 @@ $ source venv3/bin/activate
 ```
 
 To optimize inference on CPU with Intel OpenVINO:
-* Download and install OpenVINO from https://software.seek.intel.com/openvino-toolkit
+
+1. Convert model to OpenVINO IR (optional if you already have `.xml` and `.bin` files)
 ```bash
-(venv3) $ pip install -r /opt/intel/openvino/deployment_tools/model_optimizer/requirements_onnx.txt
-(venv3) $ source /opt/intel/openvino/bin/setupvars.sh
+(venv3) $ git clone -b releases/2021/1 --depth 1 https://github.com/openvinotoolkit/openvino
+(venv3) $ export PYTHONPATH=openvino/model-optimizer/:$PYTHONPATH
+(venv3) $ pip install -r openvino/model-optimizer/requirements_onnx.txt
+(venv3) $ python bonito/openvino/convert.py dna_r9.4.1
+```
+
+2. Run evaluation
+```bash
+(venv3) $ export LD_LIBRARY_PATH=$(pwd)/venv3/lib:$LD_LIBRARY_PATH
 (venv3) $ bonito evaluate dna_r9.4.1 --use_openvino --device=cpu
 ```
 
