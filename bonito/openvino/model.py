@@ -4,6 +4,7 @@ import torch
 
 try:
     from openvino.inference_engine import IECore, StatusCode
+    from .loader import torch2openvino
 except ImportError:
     pass
 
@@ -16,7 +17,10 @@ class OpenVINOModel:
         model_name = model.config['model'] + ('_fp16' if half else '')
         xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
         self.ie = IECore()
-        self.net = self.ie.read_network(xml_path, bin_path)
+        if os.path.exists(xml_path) and os.path.exists(bin_path):
+            self.net = self.ie.read_network(xml_path, bin_path)
+        else:
+            self.net = torch2openvino(model)
         self.exec_net = None
 
 

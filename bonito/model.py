@@ -50,6 +50,11 @@ class Swish(Module):
         return SwishAutoFn.apply(x)
 
 
+class Sum(Module):
+    def forward(self, x, y):
+        return x + y
+
+
 activations = {
     "relu": ReLU,
     "swish": Swish,
@@ -166,6 +171,7 @@ class Block(Module):
 
         self.use_res = residual
         self.conv = ModuleList()
+        self.sum = Sum()
 
         _in_channels = in_channels
         padding = self.get_padding(kernel_size[0], stride[0], dilation[0])
@@ -223,7 +229,7 @@ class Block(Module):
         for layer in self.conv:
             _x = layer(_x)
         if self.use_res:
-            _x += self.residual(x)
+            _x = self.sum(_x, self.residual(x))
         return self.activation(_x)
 
 
