@@ -25,7 +25,7 @@ def main(args):
         exit(1)
 
     sys.stderr.write("> loading model\n")
-    model = load_model(args.model_directory, args.device, weights=int(args.weights))
+    model = load_model(args.model_directory, args.device, weights=int(args.weights), use_openvino=args.use_openvino)
 
     if args.reference:
         sys.stderr.write("> loading reference\n")
@@ -89,6 +89,7 @@ def argparser():
     parser.add_argument("--fastq", action="store_true", default=False)
     parser.add_argument("--save-ctc", action="store_true", default=False)
     parser.add_argument("--recursive", action="store_true", default=False)
+    parser.add_argument("--use_openvino", action="store_true", default=False)
     parser.add_argument("--ctc-min-coverage", default=0.9, type=float)
     parser.add_argument("--ctc-min-accuracy", default=0.9, type=float)
     parser.add_argument("--chunksize", default=4000, type=int)

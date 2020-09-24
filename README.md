@@ -30,6 +30,13 @@ $ source venv3/bin/activate
 (venv3) $ bonito download --models --latest
 ```
 
+To optimize inference on CPU with Intel OpenVINO:
+
+```bash
+(venv3) $ export LD_LIBRARY_PATH=$(pwd)/venv3/lib:$LD_LIBRARY_PATH
+(venv3) $ bonito evaluate dna_r9.4.1 --use_openvino --device=cpu
+```
+
 ## Training your own model
 
 To train a model using your own reads, first basecall the reads with the additional `--save-ctc` flag and use the output directory as the input directory for training.
