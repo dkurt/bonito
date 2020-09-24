@@ -121,6 +121,7 @@ class Block(Module):
 
         self.use_res = residual
         self.conv = ModuleList()
+        self.sum = Sum()
 
         _in_channels = in_channels
         padding = self.get_padding(kernel_size[0], stride[0], dilation[0])
