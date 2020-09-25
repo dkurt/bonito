@@ -13,6 +13,8 @@ class OpenVINOModel:
     def __init__(self, model, half, dirname):
         self.model = model
         self.alphabet = model.alphabet
+        self.parameters = model.parameters
+        self.stride = model.stride
 
         model_name = model.config['model'] + ('_fp16' if half else '')
         xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
@@ -39,9 +41,9 @@ class OpenVINOModel:
     def __call__(self, data):
         data = np.expand_dims(data, axis=2)  # 1D->2D
         batch_size = data.shape[0]
-        if not self.exec_net:
-            inp_shape = list(data.shape)
-            inp_shape[0] = 1  # We will run the batch asynchronously
+        inp_shape = list(data.shape)
+        inp_shape[0] = 1  # We will run the batch asynchronously
+        if not self.exec_net or self.exec_net.input_info['input'].tensor_desc.dims != inp_shape:
             self.net.reshape({'input': inp_shape})
             config = {}
             if self.device == 'CPU':
@@ -82,6 +84,8 @@ class OpenVINOModel:
         if status != StatusCode.OK:
             raise Exception("Wait for idle request failed!")
         for infer_request_id, out_id in enumerate(infer_request_input_id):
+            if out_id == -1:
+                continue
             request = self.exec_net.requests[infer_request_id]
             output[out_id] = request.output_blobs['output'].buffer
 
@@ -89,5 +93,6 @@ class OpenVINOModel:
         return torch.tensor(output)
 
 
-    def decode(self, post, beamsize):
-        return self.model.decode(post, beamsize=beamsize)
+    def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):
+        return self.model.decode(x, beamsize=beamsize, threshold=threshold,
+                                 qscores=qscores, return_path=return_path)
