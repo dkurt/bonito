@@ -61,7 +61,7 @@ def transfer(x):
     Device to host transfer using pinned memory.
     """
     return {
-        k: torch.empty(v.shape, pin_memory=True, dtype=v.dtype).copy_(v).numpy()
+        k: torch.empty(v.shape, pin_memory=False, dtype=v.dtype).copy_(v).numpy()
         for k, v in x.items()
     }
 

@@ -13,3 +13,5 @@ fast-ctc-decode==0.2.5
 #bonito-cuda-runtime==0.0.2a2
 #pyclaragenomics-cuda-10-0==0.4.2
 openvino-python==2021.1
+--extra-index-url https://test.pypi.org/simple/
+test-mo-onnx

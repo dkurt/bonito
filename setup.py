@@ -16,7 +16,10 @@ else:
     raise RuntimeError('Unable to find version string in "{}/__init__.py".'.format(__pkg_name__))
 
 with open('requirements.txt') as f:
-    requirements = f.read().splitlines()
+    requirements = []
+    for line in f.read().splitlines():
+        if not line.startswith('--extra-index-url'):
+            requirements.append(line)
 
 with open('README.md', encoding='utf-8') as f:
     long_description = f.read()

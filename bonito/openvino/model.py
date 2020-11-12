@@ -2,6 +2,8 @@ import os
 import numpy as np
 import torch
 
+from bonito.nn import Swish
+
 try:
     from openvino.inference_engine import IECore, StatusCode
     from .loader import torch2openvino
@@ -15,14 +17,17 @@ class OpenVINOModel:
         self.alphabet = model.alphabet
         self.parameters = model.parameters
         self.stride = model.stride
+        self.is_ctc = model.config['model']['package'] == 'bonito.ctc'
+        self.is_crf = model.config['model']['package'] == 'bonito.crf'
+        # CRF
+        if self.is_crf:
+            self.seqdist = self.model.seqdist
+            self.encoder = self
 
-        model_name = 'model' + ('_fp16' if half else '')
-        xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
         self.ie = IECore()
-        if os.path.exists(xml_path) and os.path.exists(bin_path):
-            self.net = self.ie.read_network(xml_path, bin_path)
-        else:
-            self.net = torch2openvino(model)
+        self.half = half
+        self.dirname = dirname
+        self.net = None
         self.exec_net = None
 
 
@@ -38,23 +43,78 @@ class OpenVINOModel:
         self.device = str(device).upper()
 
 
+    def load_network(self, chunksize, force=False):
+        model_name = 'model' + ('_fp16' if self.half else '')
+        xml_path, bin_path = [os.path.join(self.dirname, model_name) + ext for ext in ['.xml', '.bin']]
+        if not os.path.exists(xml_path) or not os.path.exists(bin_path) or force:
+            # Just a dummy input to make forward pass
+            inp = torch.randn([1, 1, chunksize])
+            onnx_path = os.path.join(self.dirname, 'model.onnx')
+
+            # There is an issue with Swish at export step so we temporarly use default implementation
+            def swish_fake_forward(self, x):
+                return x * torch.sigmoid(x)
+
+            swish_origin_forward = Swish.forward
+            Swish.forward = swish_fake_forward
+            torch.onnx.export(self.model if self.is_ctc else self.model.encoder,
+                              inp, onnx_path, input_names=['input'], output_names=['output'],
+                              opset_version=11)
+            Swish.forward = swish_origin_forward
+
+            import mo_onnx
+            import subprocess
+            cmd = ['python', mo_onnx.__file__,
+                   '--input_model', onnx_path,
+                   '--data_type', 'FP16' if self.half else 'FP32',
+                   '--output_dir', self.dirname]
+            if self.is_ctc:
+                cmd += ['--extension', os.path.join(os.path.dirname(__file__), 'mo_extension'),
+                        '--input_shape=[1,1,1,{}]'.format(chunksize)]
+            subprocess.call(cmd)
+            os.remove(onnx_path)
+
+        self.net = self.ie.read_network(xml_path, bin_path)
+
+
     def __call__(self, data):
-        data = np.expand_dims(data, axis=2)  # 1D->2D
+        # Conv1D -> Conv2D efficiency optimization for CTC model
+        if self.is_ctc:
+            data = np.expand_dims(data, axis=2)  # 1D->2D
         batch_size = data.shape[0]
         inp_shape = list(data.shape)
         inp_shape[0] = 1  # We will run the batch asynchronously
-        if not self.exec_net or self.exec_net.input_info['input'].tensor_desc.dims != inp_shape:
-            self.net.reshape({'input': inp_shape})
+
+        # Prepare network at first run
+        if not self.net:
+            self.load_network(inp_shape[-1])
+
+        # Input shape changed - we need to reload network
+        if self.net.input_info['input'].tensor_desc.dims != inp_shape:
+            # CTC model is reshapeable so it's enough to just call net.reshape.
+            if self.is_ctc:
+                self.net.reshape({'input': inp_shape})
+            else:
+                self.load_network(inp_shape[-1], force=True)
+            self.exec_net = None
+
+        if not self.exec_net:
             config = {}
             if self.device == 'CPU':
                 config={'CPU_THROUGHPUT_STREAMS': 'CPU_THROUGHPUT_AUTO'}
             self.exec_net = self.ie.load_network(self.net, self.device,
                                                  config=config, num_requests=0)
 
+        for out_name in self.net.outputs.keys():
+            pass
+
         # List that maps infer requests to index of processed chunk from batch.
         # -1 means that request has not been started yet.
         infer_request_input_id = [-1] * len(self.exec_net.requests)
-        output = np.zeros([batch_size] + self.net.outputs['output'].shape[1:], dtype=np.float32)
+        out_shape = self.net.outputs[out_name].shape
+        # CTC network produces 1xWxNxC
+        # CTF network produces WxNxC (W - spatial, N - batch size, C - features)
+        output = np.zeros([out_shape[-3], batch_size, out_shape[-1]], dtype=np.float32)
 
         for inp_id in range(batch_size):
             # Get idle infer request
@@ -72,7 +132,7 @@ class OpenVINOModel:
 
             # Copy output prediction
             if out_id != -1:
-                output[out_id] = request.output_blobs['output'].buffer
+                output[:,out_id:out_id+1] = request.output_blobs[out_name].buffer
 
             # Start this request on new data
             infer_request_input_id[infer_request_id] = inp_id
@@ -87,11 +147,10 @@ class OpenVINOModel:
             if out_id == -1:
                 continue
             request = self.exec_net.requests[infer_request_id]
-            output[out_id] = request.output_blobs['output'].buffer
+            output[:,out_id:out_id+1] = request.output_blobs[out_name].buffer
 
-        output = np.squeeze(output, axis=2)  # 2D->1D
-        output = output.transpose(1, 0, 2)  # Model should produce WNC (width, batch, features)
-        return torch.tensor(output)
+        output = torch.tensor(output)
+        return output if self.is_ctc else self.model.global_norm(output)
 
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):

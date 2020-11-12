@@ -7,10 +7,51 @@ import numpy as np
 from bonito.nn import Permute, Scale, activations, rnns
 from torch.nn import Sequential, Module, Linear, Tanh, Conv1d
 
-import seqdist.sparse
-from seqdist.ctc_simple import logZ_cupy
+# import seqdist.sparse
+# from seqdist.ctc_simple import logZ_cupy
 from seqdist.core import SequenceDist, Max, Log, semiring
 
+def logZ_fwd_cpu(Ms, idx, v0, vT, S:semiring=Log, K=4):
+    T, N, C, NZ = Ms.shape
+    assert idx.shape == (C, NZ)
+    idx = idx.to(dtype=torch.int, device=Ms.device)
+    Ms_grad = Ms.new_full((T, N, C, NZ), S.zero)
+    logZ = Ms.new_full((N, C), S.zero)
+    _bytes = 8 if (Ms.dtype == torch.float64) else 4
+    # with cp.cuda.Device(Ms.device.index):
+    #     cupy_func('logZ_fwd', Ms.dtype, S, NZ, K)(grid=(N, 1, 1), block=(C//K, 1, 1), shared_mem=2*_bytes*C,
+    #            args=(logZ.data_ptr(), Ms_grad.data_ptr(), Ms.data_ptr(), v0.data_ptr(), vT.data_ptr(), idx.data_ptr(), T, N, C))
+    return S.sum(logZ, dim=1), Ms_grad
+
+
+def logZ_bwd_cpu(Ms, idx, v0, vT, S:semiring=Log, K=4):
+    T, N, C, NZ = Ms.shape
+    betas = Ms.new_full((T+1, N, C), S.zero)
+    idx_T = idx.flatten().argsort().to(dtype=torch.int, device=Ms.device) #transpose
+    _bytes = 8 if (Ms.dtype == torch.float64) else 4
+    # with cp.cuda.Device(Ms.device.index):
+    #     cupy_func('logZ_bwd', Ms.dtype, S, NZ, K)(grid=(N, 1, 1), block=(C//K, 1, 1), shared_mem=2*_bytes*C,
+    #            args=(betas.data_ptr(), Ms.data_ptr(), vT.data_ptr(), idx_T.data_ptr(), T, N, C))
+    return betas
+
+class LogZ_cpu(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, Ms, idx, v0, vT, S:semiring=Log, K=1):
+        logZ, Ms_grad = logZ_fwd_cpu(Ms, idx, v0, vT, S, K)
+        ctx.save_for_backward(Ms_grad, Ms, idx, vT)
+        ctx.semiring = S
+        ctx.K = K
+        return logZ
+
+    @staticmethod
+    def backward(ctx, grad):
+        Ms_grad, Ms, idx, vT = ctx.saved_tensors
+        S, K = ctx.semiring, ctx.K
+        T, N, C, NZ = Ms.shape
+        betas = logZ_bwd_cpu(Ms, idx, vT, S, K=K)
+        Ms_grad = S.mul(Ms_grad, betas[1:,:,:,None])
+        Ms_grad = S.dsum(Ms_grad.reshape(T, N, -1), dim=2).reshape(T, N, C, NZ)
+        return grad[None, :, None, None] * Ms_grad, None, None, None, None, None
 
 class Model(Module):
 
@@ -93,13 +134,13 @@ class CTC_CRF(SequenceDist):
         Ms = scores.reshape(T, N, -1, len(self.alphabet))
         alpha_0 = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return seqdist.sparse.logZ(Ms, self.idx, alpha_0, beta_T, S)
+        return LogZ_cpu.apply(Ms, self.idx, alpha_0, beta_T, S)
 
     def backward_scores(self, scores, S: semiring=Log):
         T, N, _ = scores.shape
         Ms = scores.reshape(T, N, -1, self.n_base + 1)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return seqdist.sparse.logZ_bwd_cupy(Ms, self.idx, beta_T, S, K=1)
+        return logZ_bwd_cpu(Ms, self.idx, beta_T, S, K=1)
 
     def viterbi(self, scores):
         traceback = self.posteriors(scores, Max)
