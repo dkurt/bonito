@@ -32,7 +32,7 @@ To optimize inference on CPU with Intel OpenVINO:
 
 ```bash
 (venv3) $ export LD_LIBRARY_PATH=$(pwd)/venv3/lib:$LD_LIBRARY_PATH
-(venv3) $ bonito evaluate dna_r9.4.1 --use_openvino --device=cpu
+(venv3) $ bonito evaluate dna_r9.4.1@v2 --use_openvino --device=cpu
 ```
 
 ## Training your own model
