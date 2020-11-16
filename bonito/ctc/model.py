@@ -3,7 +3,7 @@ Bonito Model template
 """
 
 import numpy as np
-from bonito.nn import Add, Permute, activations
+from bonito.nn import Permute, activations
 from torch.nn.functional import log_softmax
 from torch.nn import Module, ModuleList, Sequential, Conv1d, BatchNorm1d, Dropout
 
@@ -121,7 +121,6 @@ class Block(Module):
 
         self.use_res = residual
         self.conv = ModuleList()
-        self.add = Add()
 
         _in_channels = in_channels
         padding = self.get_padding(kernel_size[0], stride[0], dilation[0])
@@ -179,7 +178,7 @@ class Block(Module):
         for layer in self.conv:
             _x = layer(_x)
         if self.use_res:
-            _x = self.add(_x, self.residual(x))
+            _x = _x + self.residual(x)
         return self.activation(_x)
 
 
@@ -195,4 +194,4 @@ class Decoder(Module):
         )
 
     def forward(self, x):
-        return log_softmax(self.layers(x), dim=2)
+        return log_softmax(self.layers(x), dim=-1)

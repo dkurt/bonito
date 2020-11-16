@@ -1,10 +1,13 @@
 import os
+import io
 import numpy as np
 import torch
 
+from bonito.nn import Swish
+
 try:
     from openvino.inference_engine import IECore, StatusCode
-    from .loader import torch2openvino
+    from .loader import convert_to_2d
 except ImportError:
     pass
 
@@ -22,7 +25,25 @@ class OpenVINOModel:
         if os.path.exists(xml_path) and os.path.exists(bin_path):
             self.net = self.ie.read_network(xml_path, bin_path)
         else:
-            self.net = torch2openvino(model)
+            # Just a dummy input for export
+            inp = torch.randn([1, 1, 1, 1000])
+            buf = io.BytesIO()
+
+            # 1. Replace 1D layers to their 2D alternatives to improve efficiency
+            convert_to_2d(model)
+
+            # 2. Convert model to ONNX buffer
+            # There is an issue with Swish at export step so we temporarly use default implementation
+            def swish_fake_forward(self, x):
+                return x * torch.sigmoid(x)
+
+            Swish.forward = swish_fake_forward
+            torch.onnx.export(model, inp, buf, input_names=['input'], output_names=['output'],
+                              opset_version=11)
+
+            # 3. Import network from memory buffer
+            self.net = self.ie.read_network(buf.getvalue(), b'', init_from_buffer=True)
+
         self.exec_net = None
 
 
@@ -43,7 +64,7 @@ class OpenVINOModel:
         batch_size = data.shape[0]
         inp_shape = list(data.shape)
         inp_shape[0] = 1  # We will run the batch asynchronously
-        if not self.exec_net or self.exec_net.input_info['input'].tensor_desc.dims != inp_shape:
+        if self.net.input_info['input'].tensor_desc.dims != inp_shape:
             self.net.reshape({'input': inp_shape})
             config = {}
             if self.device == 'CPU':
@@ -54,7 +75,9 @@ class OpenVINOModel:
         # List that maps infer requests to index of processed chunk from batch.
         # -1 means that request has not been started yet.
         infer_request_input_id = [-1] * len(self.exec_net.requests)
-        output = np.zeros([batch_size] + self.net.outputs['output'].shape[1:], dtype=np.float32)
+        out_shape = self.net.outputs['output'].shape
+        # CTC network produces 1xWxNxC
+        output = np.zeros([out_shape[-3], batch_size, out_shape[-1]], dtype=np.float32)
 
         for inp_id in range(batch_size):
             # Get idle infer request
@@ -72,7 +95,7 @@ class OpenVINOModel:
 
             # Copy output prediction
             if out_id != -1:
-                output[out_id] = request.output_blobs['output'].buffer
+                output[:,out_id:out_id+1] = request.output_blobs['output'].buffer
 
             # Start this request on new data
             infer_request_input_id[infer_request_id] = inp_id
@@ -87,10 +110,8 @@ class OpenVINOModel:
             if out_id == -1:
                 continue
             request = self.exec_net.requests[infer_request_id]
-            output[out_id] = request.output_blobs['output'].buffer
+            output[:,out_id:out_id+1] = request.output_blobs['output'].buffer
 
-        output = np.squeeze(output, axis=2)  # 2D->1D
-        output = output.transpose(1, 0, 2)  # Model should produce WNC (width, batch, features)
         return torch.tensor(output)
 
 
