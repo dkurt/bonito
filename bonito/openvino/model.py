@@ -63,15 +63,16 @@ class OpenVINOModel:
             Swish.forward = swish_origin_forward
 
             import mo_onnx
-            import subprocess
-            cmd = ['python', mo_onnx.__file__,
-                   '--input_model', onnx_path,
-                   '--data_type', 'FP16' if self.half else 'FP32',
-                   '--output_dir', self.dirname]
             if self.is_ctc:
-                cmd += ['--extension', os.path.join(os.path.dirname(__file__), 'mo_extension'),
-                        '--input_shape=[1,1,1,{}]'.format(chunksize)]
-            subprocess.call(cmd)
+                mo_onnx(input_model=onnx_path,
+                        data_type=('FP16' if self.half else 'FP32'),
+                        output_dir=self.dirname,
+                        extensions=os.path.join(os.path.dirname(__file__), 'mo_extension'),
+                        input_shape='[1,1,1,{}]'.format(chunksize))
+            else:
+                mo_onnx(input_model=onnx_path,
+                        data_type=('FP16' if self.half else 'FP32'),
+                        output_dir=self.dirname)
             os.remove(onnx_path)
 
         self.net = self.ie.read_network(xml_path, bin_path)
