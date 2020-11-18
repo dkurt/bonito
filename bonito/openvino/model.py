@@ -19,12 +19,25 @@ class OpenVINOModel:
         self.parameters = model.parameters
         self.stride = model.stride
 
+        package = model.config['model']['package']
+        if not package in ['bonito.ctc', 'bonito.crf']:
+            raise Exception('Unknown model configuration: ' + package)
+        self.is_ctc = package == 'bonito.ctc'
+        self.is_crf = package == 'bonito.crf'
+
+        if self.is_crf:
+            self.seqdist = model.seqdist
+            self.encoder = self
+
         model_name = 'model' + ('_fp16' if half else '')
         xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
         self.ie = IECore()
         if os.path.exists(xml_path) and os.path.exists(bin_path):
             self.net = self.ie.read_network(xml_path, bin_path)
         else:
+            if self.is_crf:
+                raise Exception('OpenVINO 2021.2 is required to build CRF model in runtime. Use Model Optimizer instead.')
+
             # Just a dummy input for export
             inp = torch.randn([1, 1, 1, 1000])
             buf = io.BytesIO()
@@ -60,12 +73,16 @@ class OpenVINOModel:
 
 
     def __call__(self, data):
-        data = np.expand_dims(data, axis=2)  # 1D->2D
+        data = data.float()
+        if self.is_ctc:
+            data = np.expand_dims(data, axis=2)  # 1D->2D
         batch_size = data.shape[0]
         inp_shape = list(data.shape)
         inp_shape[0] = 1  # We will run the batch asynchronously
         if self.net.input_info['input'].tensor_desc.dims != inp_shape:
             self.net.reshape({'input': inp_shape})
+            self.exec_net = None
+        if not self.exec_net:
             config = {}
             if self.device == 'CPU':
                 config={'CPU_THROUGHPUT_STREAMS': 'CPU_THROUGHPUT_AUTO'}
@@ -112,7 +129,8 @@ class OpenVINOModel:
             request = self.exec_net.requests[infer_request_id]
             output[:,out_id:out_id+1] = request.output_blobs['output'].buffer
 
-        return torch.tensor(output)
+        output = torch.tensor(output)
+        return self.model.global_norm(output.to(torch.float16).cuda()) if self.is_crf else output
 
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):
