@@ -130,7 +130,7 @@ class OpenVINOModel:
             output[:,out_id:out_id+1] = request.output_blobs['output'].buffer
 
         output = torch.tensor(output)
-        return self.model.global_norm(output.to(torch.float16).cuda()) if self.is_crf else output
+        return self.model.global_norm(output) if self.is_crf else output
 
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):

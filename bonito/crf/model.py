@@ -7,9 +7,66 @@ import numpy as np
 from bonito.nn import Permute, Scale, activations, rnns
 from torch.nn import Sequential, Module, Linear, Tanh, Conv1d
 
-import seqdist.sparse
-from seqdist.ctc_simple import logZ_cupy
+if torch.cuda.is_available():
+    import seqdist.sparse
+    from seqdist.ctc_simple import logZ_cupy
+else:
+    from scipy import special
 from seqdist.core import SequenceDist, Max, Log, semiring
+
+
+if torch.cuda.is_available():
+    def sparse_logZ(Ms, idx, alpha_0, beta_T, S):
+        return seqdist.sparse.logZ(Ms, idx, alpha_0, beta_T, S)
+else:
+    def logZ_fwd_cpu(Ms, idx, v0, vT, S):
+        T, N, C, NZ = Ms.shape
+        Ms_grad = torch.zeros(T, N, C, NZ)
+
+        a = v0
+        for t in range(T):
+            s = a[:, idx] + Ms[t]
+            a = torch.logsumexp(s, -1)
+            Ms_grad[t, :] = s
+        return S.sum(a + vT, dim=1), Ms_grad
+
+    def logZ_bwd_cpu(Ms, idx, vT, S):
+        T, N, C, NZ = Ms.shape
+        Ms = Ms.reshape(T, N, -1)
+        idx_T = idx.flatten().argsort().to(dtype=torch.long).reshape(C, NZ)
+
+        betas = torch.ones(T + 1, N, C)
+
+        a = vT
+        betas[T, :, :] = a[:, :]
+
+        for t in reversed(range(T)):
+            s = a[:, idx_T // NZ] + Ms[t, :, idx_T]
+            a = torch.logsumexp(s, -1)
+            betas[t, :] = a[:]
+        return betas
+
+    class _LogZ(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, Ms, idx, v0, vT, S:semiring):
+            idx = idx.to(dtype=torch.long, device=Ms.device)
+            logZ, Ms_grad = logZ_fwd_cpu(Ms, idx, v0, vT, S)
+            ctx.save_for_backward(Ms_grad, Ms, idx, vT)
+            ctx.semiring = S
+            return logZ
+
+        @staticmethod
+        def backward(ctx, grad):
+            Ms_grad, Ms, idx, vT = ctx.saved_tensors
+            S = ctx.semiring
+            T, N, C, NZ = Ms.shape
+            betas = logZ_bwd_cpu(Ms, idx, vT, S)
+            Ms_grad = S.mul(Ms_grad, betas[1:,:,:,None])
+            Ms_grad = S.dsum(Ms_grad.reshape(T, N, -1), dim=2).reshape(T, N, C, NZ)
+            return grad[None, :, None, None] * Ms_grad, None, None, None, None, None
+
+    def sparse_logZ(Ms, idx, v0, vT, S:semiring=Log):
+        return _LogZ.apply(Ms, idx, v0, vT, S)
 
 
 class Model(Module):
@@ -93,7 +150,7 @@ class CTC_CRF(SequenceDist):
         Ms = scores.reshape(T, N, -1, len(self.alphabet))
         alpha_0 = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return seqdist.sparse.logZ(Ms, self.idx, alpha_0, beta_T, S)
+        return sparse_logZ(Ms, self.idx, alpha_0, beta_T, S)
 
     def backward_scores(self, scores, S: semiring=Log):
         T, N, _ = scores.shape
