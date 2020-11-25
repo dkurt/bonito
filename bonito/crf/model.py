@@ -10,70 +10,58 @@ from torch.nn import Sequential, Module, Linear, Tanh, Conv1d
 if torch.cuda.is_available():
     import seqdist.sparse
     from seqdist.ctc_simple import logZ_cupy
-else:
-    from scipy import special
 from seqdist.core import SequenceDist, Max, Log, semiring
 
 
-if torch.cuda.is_available():
-    def sparse_logZ(Ms, idx, alpha_0, beta_T, S):
-        return seqdist.sparse.logZ(Ms, idx, alpha_0, beta_T, S)
+def logZ_fwd_cpu(Ms, idx, v0, vT, S):
+    T, N, C, NZ = Ms.shape
+    Ms_grad = torch.zeros(T, N, C, NZ)
 
-    def logZ_bwd(Ms, idx, vT, S, K):
-        return seqdist.sparse.logZ_bwd_cupy(Ms, idx, vT, S, K)
-else:
-    def logZ_fwd_cpu(Ms, idx, v0, vT, S):
+    a = v0
+    for t in range(T):
+        s = S.mul(a[:, idx], Ms[t])
+        a = S.sum(s, -1)
+        Ms_grad[t] = s
+    return S.sum(a + vT, dim=1), Ms_grad
+
+def logZ_bwd_cpu(Ms, idx, vT, S, K=1):
+    assert(K == 1)
+    T, N, C, NZ = Ms.shape
+    Ms = Ms.reshape(T, N, -1)
+    idx_T = idx.flatten().argsort().to(dtype=torch.long).reshape(C, NZ)
+
+    betas = torch.ones(T + 1, N, C)
+
+    a = vT
+    betas[T] = a
+    for t in reversed(range(T)):
+        s = S.mul(a[:, idx_T // NZ], Ms[t, :, idx_T])
+        a = S.sum(s, -1)
+        betas[t] = a
+    return betas
+
+
+class _LogZ(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, Ms, idx, v0, vT, S:semiring):
+        idx = idx.to(dtype=torch.long, device=Ms.device)
+        logZ, Ms_grad = logZ_fwd_cpu(Ms, idx, v0, vT, S)
+        ctx.save_for_backward(Ms_grad, Ms, idx, vT)
+        ctx.semiring = S
+        return logZ
+
+    @staticmethod
+    def backward(ctx, grad):
+        Ms_grad, Ms, idx, vT = ctx.saved_tensors
+        S = ctx.semiring
         T, N, C, NZ = Ms.shape
-        Ms_grad = torch.zeros(T, N, C, NZ)
+        betas = logZ_bwd_cpu(Ms, idx, vT, S)
+        Ms_grad = S.mul(Ms_grad, betas[1:,:,:,None])
+        Ms_grad = S.dsum(Ms_grad.reshape(T, N, -1), dim=2).reshape(T, N, C, NZ)
+        return grad[None, :, None, None] * Ms_grad, None, None, None, None, None
 
-        a = v0
-        for t in range(T):
-            s = S.mul(a[:, idx], Ms[t])
-            a = S.sum(s, -1)
-            Ms_grad[t, :] = s
-        return S.sum(a + vT, dim=1), Ms_grad
-
-    def logZ_bwd_cpu(Ms, idx, vT, S):
-        T, N, C, NZ = Ms.shape
-        Ms = Ms.reshape(T, N, -1)
-        idx_T = idx.flatten().argsort().to(dtype=torch.long).reshape(C, NZ)
-
-        betas = torch.ones(T + 1, N, C)
-
-        a = vT
-        betas[T, :, :] = a[:, :]
-
-        for t in reversed(range(T)):
-            s = S.mul(a[:, idx_T // NZ], Ms[t, :, idx_T])
-            a = S.sum(s, -1)
-            betas[t, :] = a[:]
-        return betas
-
-    def logZ_bwd(Ms, idx, vT, S, K):
-        assert(K == 1)
-        return logZ_bwd_cpu(Ms, idx, vT, S)
-
-    class _LogZ(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, Ms, idx, v0, vT, S:semiring):
-            idx = idx.to(dtype=torch.long, device=Ms.device)
-            logZ, Ms_grad = logZ_fwd_cpu(Ms, idx, v0, vT, S)
-            ctx.save_for_backward(Ms_grad, Ms, idx, vT)
-            ctx.semiring = S
-            return logZ
-
-        @staticmethod
-        def backward(ctx, grad):
-            Ms_grad, Ms, idx, vT = ctx.saved_tensors
-            S = ctx.semiring
-            T, N, C, NZ = Ms.shape
-            betas = logZ_bwd_cpu(Ms, idx, vT, S)
-            Ms_grad = S.mul(Ms_grad, betas[1:,:,:,None])
-            Ms_grad = S.dsum(Ms_grad.reshape(T, N, -1), dim=2).reshape(T, N, C, NZ)
-            return grad[None, :, None, None] * Ms_grad, None, None, None, None, None
-
-    def sparse_logZ(Ms, idx, v0, vT, S:semiring=Log):
-        return _LogZ.apply(Ms, idx, v0, vT, S)
+def sparse_logZ(Ms, idx, v0, vT, S:semiring=Log):
+    return _LogZ.apply(Ms, idx, v0, vT, S)
 
 
 class Model(Module):
@@ -110,9 +98,9 @@ class Model(Module):
         return self.global_norm(self.encoder(x))
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):
-        scores = self.seqdist.posteriors(x.to(torch.float32)) + 1e-8
+        scores = self.seqdist.posteriors(x.to(torch.float32).unsqueeze(1)) + 1e-8
         tracebacks = self.seqdist.viterbi(scores.log()).to(torch.int16).T
-        return [self.seqdist.path_to_str(tr) for tr in tracebacks.cpu().numpy()]
+        return self.seqdist.path_to_str(tracebacks.cpu().numpy())
 
 
 def conv(c_in, c_out, ks, stride=1, bias=False, dilation=1, groups=1):
@@ -157,13 +145,19 @@ class CTC_CRF(SequenceDist):
         Ms = scores.reshape(T, N, -1, len(self.alphabet))
         alpha_0 = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return sparse_logZ(Ms, self.idx, alpha_0, beta_T, S)
+        if not Ms.device.index is None:
+            return seqdist.sparse.logZ(Ms, self.idx, alpha_0, beta_T, S)
+        else:
+            return sparse_logZ(Ms, self.idx, alpha_0, beta_T, S)
 
     def backward_scores(self, scores, S: semiring=Log):
         T, N, _ = scores.shape
         Ms = scores.reshape(T, N, -1, self.n_base + 1)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return logZ_bwd(Ms, self.idx, beta_T, S, K=1)
+        if not Ms.device.index is None:
+            return seqdist.sparse.logZ_bwd_cupy(Ms, self.idx, beta_T, S, K=1)
+        else:
+            return logZ_bwd_cpu(Ms, self.idx, beta_T, S, K=1)
 
     def viterbi(self, scores):
         traceback = self.posteriors(scores, Max)

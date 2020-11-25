@@ -33,7 +33,7 @@ def compute_scores(model, batch):
     """
     with torch.no_grad():
         device = next(model.parameters()).device
-        dtype = torch.float16 if half_supported() else torch.float32
+        dtype = torch.float16 if half_supported() and device != torch.device('cpu') else torch.float32
         scores = model.encoder(batch.to(dtype).to(device))
         betas = model.seqdist.backward_scores(scores.to(torch.float32))
         betas -= (betas.max(2, keepdim=True)[0] - 5.0)
