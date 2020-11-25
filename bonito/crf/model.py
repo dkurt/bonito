@@ -25,8 +25,8 @@ else:
 
         a = v0
         for t in range(T):
-            s = a[:, idx] + Ms[t]
-            a = torch.logsumexp(s, -1)
+            s = S.mul(a[:, idx], Ms[t])
+            a = S.sum(s, -1)
             Ms_grad[t, :] = s
         return S.sum(a + vT, dim=1), Ms_grad
 
@@ -41,8 +41,8 @@ else:
         betas[T, :, :] = a[:, :]
 
         for t in reversed(range(T)):
-            s = a[:, idx_T // NZ] + Ms[t, :, idx_T]
-            a = torch.logsumexp(s, -1)
+            s = S.mul(a[:, idx_T // NZ], Ms[t, :, idx_T])
+            a = S.sum(s, -1)
             betas[t, :] = a[:]
         return betas
 
@@ -103,9 +103,9 @@ class Model(Module):
         return self.global_norm(self.encoder(x))
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):
-        scores = self.seqdist.posteriors(x.to(torch.float32).unsqueeze(1)) + 1e-8
+        scores = self.seqdist.posteriors(x.to(torch.float32)) + 1e-8
         tracebacks = self.seqdist.viterbi(scores.log()).to(torch.int16).T
-        return self.seqdist.path_to_str(tracebacks.cpu().numpy())
+        return [self.seqdist.path_to_str(tr) for tr in tracebacks.cpu().numpy()]
 
 
 def conv(c_in, c_out, ks, stride=1, bias=False, dilation=1, groups=1):
