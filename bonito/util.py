@@ -298,7 +298,7 @@ def load_model(dirname, device, weights=None, half=None, chunksize=0, use_openvi
     if use_openvino:
         model = OpenVINOModel(model, half, dirname)
 
-    if half is None:
+    if half is None and device != torch.device('cpu'):
         half = half_supported()
 
     if half: model = model.half()

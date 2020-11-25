@@ -27,7 +27,7 @@ class OpenVINOModel:
 
         if self.is_crf:
             self.seqdist = model.seqdist
-            self.encoder = self
+            self.encoder = lambda data : self(data, encoder=True)
 
         model_name = 'model' + ('_fp16' if half else '')
         xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
@@ -72,7 +72,7 @@ class OpenVINOModel:
         self.device = str(device).upper()
 
 
-    def __call__(self, data):
+    def __call__(self, data, encoder=False):
         data = data.float()
         if self.is_ctc:
             data = np.expand_dims(data, axis=2)  # 1D->2D
@@ -130,7 +130,9 @@ class OpenVINOModel:
             output[:,out_id:out_id+1] = request.output_blobs['output'].buffer
 
         output = torch.tensor(output)
-        return self.model.global_norm(output.to(torch.float16).cuda()) if self.is_crf else output
+        if encoder:
+            return output
+        return self.model.global_norm(output) if self.is_crf else output
 
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):
