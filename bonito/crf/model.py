@@ -18,6 +18,9 @@ from seqdist.core import SequenceDist, Max, Log, semiring
 if torch.cuda.is_available():
     def sparse_logZ(Ms, idx, alpha_0, beta_T, S):
         return seqdist.sparse.logZ(Ms, idx, alpha_0, beta_T, S)
+
+    def logZ_bwd(Ms, idx, vT, S, K):
+        return seqdist.sparse.logZ_bwd_cupy(Ms, idx, vT, S, K)
 else:
     def logZ_fwd_cpu(Ms, idx, v0, vT, S):
         T, N, C, NZ = Ms.shape
@@ -45,6 +48,10 @@ else:
             a = S.sum(s, -1)
             betas[t, :] = a[:]
         return betas
+
+    def logZ_bwd(Ms, idx, vT, S, K):
+        assert(K == 1)
+        return logZ_bwd_cpu(Ms, idx, vT, S)
 
     class _LogZ(torch.autograd.Function):
         @staticmethod
@@ -156,7 +163,7 @@ class CTC_CRF(SequenceDist):
         T, N, _ = scores.shape
         Ms = scores.reshape(T, N, -1, self.n_base + 1)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return seqdist.sparse.logZ_bwd_cupy(Ms, self.idx, beta_T, S, K=1)
+        return logZ_bwd(Ms, self.idx, beta_T, S, K=1)
 
     def viterbi(self, scores):
         traceback = self.posteriors(scores, Max)

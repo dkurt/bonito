@@ -60,8 +60,9 @@ def transfer(x):
     """
     Device to host transfer using pinned memory.
     """
+    pin_memory = torch.cuda.is_available()
     return {
-        k: torch.empty(v.shape, pin_memory=True, dtype=v.dtype).copy_(v).numpy()
+        k: torch.empty(v.shape, pin_memory=pin_memory, dtype=v.dtype).copy_(v).numpy()
         for k, v in x.items()
     }
 
