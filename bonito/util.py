@@ -17,7 +17,7 @@ import torch
 import parasail
 import numpy as np
 from torch.cuda import get_device_capability
-from bonito.openvino.model import OpenVINOModel
+from bonito.openvino.model import load_openvino_model
 
 try:
     from claragenomics.bindings import cuda
@@ -296,7 +296,7 @@ def load_model(dirname, device, weights=None, half=None, chunksize=0, use_openvi
     model.load_state_dict(new_state_dict)
 
     if use_openvino:
-        model = OpenVINOModel(model, half, dirname)
+        model = load_openvino_model(model, dirname)
 
     if half is None and device != torch.device('cpu'):
         half = half_supported()
