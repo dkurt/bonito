@@ -35,7 +35,17 @@ class OpenVINOModel:
         if os.path.exists(xml_path) and os.path.exists(bin_path):
             self.net = self.ie.read_network(xml_path, bin_path)
         else:
+            # There is an issue with Swish at export step so we temporarly use default implementation
+            origin_swish_forward = Swish.forward
+            def swish_fake_forward(self, x):
+                return x * torch.sigmoid(x)
+            Swish.forward = swish_fake_forward
+
             if self.is_crf:
+                inp = torch.randn([1, 1, 1000])
+                torch.onnx.export(model.encoder, inp, os.path.join(dirname, model_name) + '.onnx',
+                                  input_names=['input'], output_names=['output'],
+                                  opset_version=11)
                 raise Exception('OpenVINO 2021.2 is required to build CRF model in runtime. Use Model Optimizer instead.')
 
             # Just a dummy input for export
@@ -46,13 +56,9 @@ class OpenVINOModel:
             convert_to_2d(model)
 
             # 2. Convert model to ONNX buffer
-            # There is an issue with Swish at export step so we temporarly use default implementation
-            def swish_fake_forward(self, x):
-                return x * torch.sigmoid(x)
-
-            Swish.forward = swish_fake_forward
             torch.onnx.export(model, inp, buf, input_names=['input'], output_names=['output'],
                               opset_version=11)
+            Swish.forward = origin_swish_forward
 
             # 3. Import network from memory buffer
             self.net = self.ie.read_network(buf.getvalue(), b'', init_from_buffer=True)
@@ -136,5 +142,8 @@ class OpenVINOModel:
 
 
     def decode(self, x, beamsize=5, threshold=1e-3, qscores=False, return_path=False):
-        return self.model.decode(x, beamsize=beamsize, threshold=threshold,
-                                 qscores=qscores, return_path=return_path)
+        if self.is_crf:
+            return self.model.decode(x)
+        else:
+            return self.model.decode(x, beamsize=beamsize, threshold=threshold,
+                                     qscores=qscores, return_path=return_path)
