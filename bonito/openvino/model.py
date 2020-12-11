@@ -24,18 +24,15 @@ def load_openvino_model(model, dirname):
 
 class OpenVINOModel:
 
-    def __init__(self, model):
+    def __init__(self, model, dirname):
         self.model = model
         self.alphabet = model.alphabet
         self.parameters = model.parameters
         self.stride = model.stride
+        self.net = None
         self.exec_net = None
-
-        # There is an issue with Swish at export step so we temporarly use default implementation
-        origin_swish_forward = Swish.forward
-        def swish_fake_forward(self, x):
-            return x * torch.sigmoid(x)
-        Swish.forward = swish_fake_forward
+        self.dirname = dirname
+        self.ie = IECore()
 
 
     def eval(self):
@@ -49,21 +46,44 @@ class OpenVINOModel:
     def to(self, device):
         self.device = str(device).upper()
 
+    """
+    Call this method once to initialize executable network
+    """
+    def init_model(self, model, inp_shape):
+        # First, we try to check if there is IR on disk. If not - load model in runtime
+        xml_path, bin_path = [os.path.join(self.dirname, 'model') + ext for ext in ['.xml', '.bin']]
+        if os.path.exists(xml_path) and os.path.exists(bin_path):
+            self.net = self.ie.read_network(xml_path, bin_path)
+        else:
+            # There is an issue with Swish at export step so we temporarly use default implementation
+            origin_swish_forward = Swish.forward
+            def swish_fake_forward(self, x):
+                return x * torch.sigmoid(x)
+            Swish.forward = swish_fake_forward
+
+            # Convert model to ONNX buffer
+            buf = io.BytesIO()
+            inp = torch.randn(inp_shape)
+            torch.onnx.export(model, inp, buf, input_names=['input'], output_names=['output'],
+                              opset_version=11)
+            Swish.forward = origin_swish_forward
+
+            # Import network from memory buffer
+            self.net = self.ie.read_network(buf.getvalue(), b'', init_from_buffer=True)
+
+        # Load model to device
+        config = {}
+        if self.device == 'CPU':
+            config={'CPU_THROUGHPUT_STREAMS': 'CPU_THROUGHPUT_AUTO'}
+        self.exec_net = self.ie.load_network(self.net, self.device,
+                                             config=config, num_requests=0)
+
 
     def process(self, data):
         data = data.float()
         batch_size = data.shape[0]
         inp_shape = list(data.shape)
         inp_shape[0] = 1  # We will run the batch asynchronously
-        if self.net.input_info['input'].tensor_desc.dims != inp_shape:
-            self.net.reshape({'input': inp_shape})
-            self.exec_net = None
-        if not self.exec_net:
-            config = {}
-            if self.device == 'CPU':
-                config={'CPU_THROUGHPUT_STREAMS': 'CPU_THROUGHPUT_AUTO'}
-            self.exec_net = self.ie.load_network(self.net, self.device,
-                                                 config=config, num_requests=0)
 
         # List that maps infer requests to index of processed chunk from batch.
         # -1 means that request has not been started yet.
@@ -111,32 +131,15 @@ class OpenVINOModel:
 class CTCModel(OpenVINOModel):
 
     def __init__(self, model, dirname):
-        super().__init__(model)
-
-        model_name = 'model'
-        xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
-        self.ie = IECore()
-        if os.path.exists(xml_path) and os.path.exists(bin_path):
-            self.net = self.ie.read_network(xml_path, bin_path)
-        else:
-            # Just a dummy input for export
-            inp = torch.randn([1, 1, 1, 1000])
-            buf = io.BytesIO()
-
-            # 1. Replace 1D layers to their 2D alternatives to improve efficiency
-            convert_to_2d(model)
-
-            # 2. Convert model to ONNX buffer
-            torch.onnx.export(model, inp, buf, input_names=['input'], output_names=['output'],
-                              opset_version=11)
-            Swish.forward = origin_swish_forward
-
-            # 3. Import network from memory buffer
-            self.net = self.ie.read_network(buf.getvalue(), b'', init_from_buffer=True)
+        super().__init__(model, dirname)
 
 
     def __call__(self, data):
         data = data.unsqueeze(2)  # 1D->2D
+        if self.exec_net is None:
+            convert_to_2d(self.model)
+            self.init_model(self.model, [1, 1, 1, data.shape[-1]])
+
         return self.process(data)
 
 
@@ -148,25 +151,15 @@ class CTCModel(OpenVINOModel):
 class CRFModel(OpenVINOModel):
 
     def __init__(self, model, dirname):
-        super().__init__(model)
+        super().__init__(model, dirname)
         self.seqdist = model.seqdist
         self.encoder = lambda data : self(data, encoder=True)
 
-        # TODO: move to OpenVINOModel constructor when 2021.2 is out
-        model_name = 'model'
-        xml_path, bin_path = [os.path.join(dirname, model_name) + ext for ext in ['.xml', '.bin']]
-        self.ie = IECore()
-        if os.path.exists(xml_path) and os.path.exists(bin_path):
-            self.net = self.ie.read_network(xml_path, bin_path)
-        else:
-            inp = torch.randn([1, 1, 1000])
-            torch.onnx.export(model.encoder, inp, os.path.join(dirname, model_name) + '.onnx',
-                              input_names=['input'], output_names=['output'],
-                              opset_version=11)
-            raise Exception('OpenVINO 2021.2 is required to build CRF model in runtime. Use Model Optimizer instead.')
-
 
     def __call__(self, data, encoder=False):
+        if self.exec_net is None:
+            self.init_model(self.model.encoder, [1, 1, data.shape[-1]])
+
         if encoder:
             return self.process(data)
         else:
