@@ -1,0 +1,42 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  run_linux:
+    name: Test on Linux
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install
+      run: |
+        sudo apt-get install -y python3-setuptools
+        python3 -m pip install --upgrade pip
+        python3 -m pip install -r requirements.txt
+        sudo python3 setup.py develop
+
+    - name: Download data and models
+      run: |
+        bonito download --models
+        mkdir reads
+        sudo apt-get install -y megatools
+        megadl 'https://mega.nz/#!dccAET7R!-zq6ECPCzaN5jLjh8ASKRJdcjt-1325pEAtuIcmBGsg' --no-progress
+        unzip reads.zip -d reads
+
+    - name: Test dna_r9.4.1@v2
+      run: |
+        bonito basecaller dna_r9.4.1@v2 --device=cpu reads > ref.fasta
+        bonito basecaller dna_r9.4.1@v2 --use_openvino --device=cpu reads > out.fasta
+        cat ref.fasta
+        cat out.fasta
+        cmp ref.fasta out.fasta
+
+    - name: Test dna_r10.3@v3
+      run: |
+        bonito basecaller dna_r10.3@v3 --device=cpu reads > ref.fasta
+        bonito basecaller dna_r10.3@v3 --use_openvino --device=cpu reads > out.fasta
+        cat ref.fasta
+        cat out.fasta
+        cmp ref.fasta out.fasta

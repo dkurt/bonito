@@ -60,6 +60,12 @@ def transfer(x):
     """
     Device to host transfer using pinned memory.
     """
+    if not torch.cuda.is_available():
+        return {
+            k: torch.empty(v.shape, pin_memory=False, dtype=v.dtype).copy_(v).numpy()
+            for k, v in x.items()
+        }
+
     torch.cuda.synchronize()
     with torch.cuda.stream(torch.cuda.Stream()):
         return {

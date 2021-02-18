@@ -37,7 +37,8 @@ def compute_scores(model, batch):
     """
     with torch.no_grad():
         device = next(model.parameters()).device
-        chunks = batch.to(torch.half).to(device)
+        chunks = batch.to(torch.half) if half_supported() else batch
+        chunks = chunks.to(device)
         probs = permute(model(chunks), 'TNC', 'NTC')
     return probs.cpu().to(torch.float32)
 
